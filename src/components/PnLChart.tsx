@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { Chart, BarElement, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Filler, BarController, LineController } from "chart.js";
 
 Chart.register(BarElement, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Filler, BarController, LineController);
