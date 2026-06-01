@@ -13,19 +13,12 @@ import {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const {
-      apiKey,
-      apiSecret,
-      method = "moving_average",
-      period = "monthly",
-      market = "all",
-    } = body as {
-      apiKey: string;
-      apiSecret: string;
-      method: CalcMethod;
-      period: PeriodType;
-      market: MarketType;
-    };
+    console.log("Raw body:", JSON.stringify(body).slice(0, 100));
+    const apiKey = body.apiKey as string;
+    const apiSecret = body.apiSecret as string;
+    const method = (body.method ?? "moving_average") as CalcMethod;
+    const period = (body.period ?? "monthly") as PeriodType;
+    const market = (body.market ?? "all") as MarketType;
 
     if (!apiKey || !apiSecret) {
       return NextResponse.json({ error: "API key and secret are required" }, { status: 400 });
