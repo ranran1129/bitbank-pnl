@@ -23,7 +23,7 @@ export class BitbankClient {
   private async privateGet<T>(path: string, params?: Record<string, string>): Promise<T> {
     const nonce = this.nonce();
     const query = params ? "?" + new URLSearchParams(params).toString() : "";
-    const message = nonce + path + query;
+    const message = nonce + "/v1" + path + query;
     const signature = this.sign(message);
 
     const res = await fetch(PRIVATE_BASE + path + query, {
