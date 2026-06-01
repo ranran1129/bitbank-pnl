@@ -1,4 +1,4 @@
-import CryptoJS from "crypto-js";
+import { createHmac } from "crypto";
 
 const PRIVATE_BASE = "https://api.bitbank.cc/v1";
 const PUBLIC_BASE = "https://public.bitbank.cc";
@@ -13,7 +13,7 @@ export class BitbankClient {
   }
 
   private sign(message: string): string {
-    return CryptoJS.HmacSHA256(message, this.apiSecret).toString();
+    return createHmac("sha256", this.apiSecret).update(message).digest("hex");
   }
 
   private nonce(): string {
@@ -41,8 +41,6 @@ export class BitbankClient {
     return data.data as T;
   }
 
-  // ===== Public endpoints (no auth) =====
-
   static async getTicker(pair: string) {
     const res = await fetch(`${PUBLIC_BASE}/${pair}/ticker`);
     const data = await res.json();
@@ -59,18 +57,14 @@ export class BitbankClient {
     return map;
   }
 
-  // ===== Private endpoints =====
-
   async getAssets() {
     return this.privateGet<{ assets: import("./calc").BitbankAsset[] }>("/user/assets");
   }
 
-  async getSpotTrades(pair: string, count = 100, since?: number) {
-    const params: Record<string, string> = { count: String(count) };
-    if (since) params.since = String(since);
+  async getSpotTrades(pair: string, count = 100) {
     return this.privateGet<{ trades: import("./calc").BitbankTrade[] }>(
       `/user/spot/trade_history`,
-      { pair, ...params }
+      { pair, count: String(count) }
     );
   }
 
@@ -99,7 +93,6 @@ export class BitbankClient {
   }
 }
 
-// Supported spot pairs
 export const SPOT_PAIRS = [
   "btc_jpy", "eth_jpy", "xrp_jpy", "sol_jpy", "doge_jpy",
   "ada_jpy", "dot_jpy", "ltc_jpy", "bcc_jpy", "mona_jpy",
@@ -108,5 +101,4 @@ export const SPOT_PAIRS = [
 
 export const MARGIN_PAIRS = [
   "btc_jpy", "eth_jpy", "xrp_jpy", "sol_jpy", "doge_jpy",
-  "ada_jpy", "link_jpy", "avax_jpy", "matic_jpy",
 ];
