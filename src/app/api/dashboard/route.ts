@@ -31,12 +31,11 @@ export async function POST(req: NextRequest) {
     
     const client = new BitbankClient(apiKey, apiSecret);
 
-    const assetsRes = await client.getAssets();
-    console.log("Assets OK:", assetsRes.assets.length);
-    const btcTrades = await client.getSpotTrades("btc_jpy", 10);
-    console.log("BTC trades:", JSON.stringify(btcTrades).slice(0, 200));
-    const spotTrades: import("@/lib/calc").BitbankTrade[] = [];
-    const tickers = await BitbankClient.getMultiTicker(SPOT_PAIRS);
+    const [assetsRes, spotTrades, tickers] = await Promise.all([
+      client.getAssets(),
+      market !== "margin" ? client.getAllSpotTrades(SPOT_PAIRS) : Promise.resolve([]),
+      BitbankClient.getMultiTicker(SPOT_PAIRS),
+    ]);
 
     let marginPositions: import("@/lib/calc").BitbankMarginPosition[] = [];
     let openMarginPositions: import("@/lib/calc").BitbankMarginPosition[] = [];
