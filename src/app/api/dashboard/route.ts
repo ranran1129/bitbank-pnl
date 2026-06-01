@@ -30,6 +30,10 @@ export async function POST(req: NextRequest) {
     if (!apiKey || !apiSecret) {
       return NextResponse.json({ error: "API key and secret are required" }, { status: 400 });
     }
+    
+    console.log("API Key length:", apiKey.length);
+    console.log("API Secret length:", apiSecret.length);
+    console.log("API Key first 4:", apiKey.slice(0, 4));
 
     const client = new BitbankClient(apiKey, apiSecret);
 
