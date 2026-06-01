@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --accent: #00d4a1;
+  --danger: #ff6b35;
+  --bg: #0a0b0d;
+  --bg2: #111316;
+  --bg3: #181b1f;
+  --border: rgba(255,255,255,0.07);
+  --border2: rgba(255,255,255,0.12);
+  --text1: #f0f2f5;
+  --text2: #8891a4;
+  --text3: #545d6e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text1);
+  font-family: 'Inter', -apple-system, sans-serif;
+  min-height: 100vh;
+}
+
+.mono { font-family: 'SF Mono', Menlo, monospace; }
+
+input, select {
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  color: var(--text1);
+  outline: none;
+  transition: border-color .15s;
+}
+input:focus, select:focus { border-color: var(--accent); }
+
+input::placeholder { color: var(--text3); }
+
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.pos { color: var(--accent); }
+.neg { color: var(--danger); }
