@@ -69,12 +69,15 @@ export class BitbankClient {
   }
 
   async getAllSpotTrades(pairs: string[], count = 100) {
-    const results = await Promise.allSettled(
-      pairs.map((p) => this.getSpotTrades(p, count))
-    );
     const trades: import("./calc").BitbankTrade[] = [];
-    for (const r of results) {
-      if (r.status === "fulfilled") trades.push(...r.value.trades);
+    for (const pair of pairs) {
+      try {
+        await new Promise((r) => setTimeout(r, 200));
+        const res = await this.getSpotTrades(pair, count);
+        trades.push(...res.trades);
+      } catch {
+        // skip failed pairs
+      }
     }
     return trades.sort((a, b) => a.executed_at - b.executed_at);
   }
