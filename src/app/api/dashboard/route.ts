@@ -52,7 +52,9 @@ export async function POST(req: NextRequest) {
         // margin not enabled
       }
     }
-
+   
+    console.log("Spot trades count:", spotTrades.length);
+    console.log("Assets count:", assetsRes.assets.length);
     const filteredSpot = filterByPeriod(spotTrades, period);
     const calcFn = method === "moving_average" ? calcMovingAverage : calcTotalAverage;
     const spotState = calcFn(filteredSpot);
