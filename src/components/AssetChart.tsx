@@ -1,15 +1,9 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import {
-  Chart,
-  BarElement,
-  CategoryScale,
-  LinearScale,
-  Tooltip,
-} from "chart.js";
+import { Chart, BarElement, CategoryScale, LinearScale, Tooltip, BarController } from "chart.js";
 
-Chart.register(BarElement, CategoryScale, LinearScale, Tooltip);
+Chart.register(BarElement, CategoryScale, LinearScale, Tooltip, BarController);
 
 interface Props {
   byAsset: { asset: string; realized: number; unrealized: number }[];
