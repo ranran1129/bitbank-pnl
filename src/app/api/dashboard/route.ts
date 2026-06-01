@@ -33,8 +33,9 @@ export async function POST(req: NextRequest) {
     
     console.log("API Key length:", apiKey.length);
     console.log("API Secret length:", apiSecret.length);
-    console.log("API Key first 4:", apiKey.slice(0, 4));
-
+    console.log("API Key first 8:", apiKey.slice(0, 8));
+    console.log("Full body keys:", Object.keys(body));
+    
     const client = new BitbankClient(apiKey, apiSecret);
 
     const [assetsRes, spotTrades, tickers] = await Promise.all([
