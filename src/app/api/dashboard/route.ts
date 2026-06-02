@@ -13,7 +13,6 @@ import {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    console.log("Raw body:", JSON.stringify(body).slice(0, 100));
     const apiKey = body.apiKey as string;
     const apiSecret = body.apiSecret as string;
     const method = (body.method ?? "moving_average") as CalcMethod;
@@ -21,23 +20,25 @@ export async function POST(req: NextRequest) {
     const market = (body.market ?? "all") as MarketType;
 
     if (!apiKey || !apiSecret) {
-      return NextResponse.json({ error: "API key and secret are required" }, { status: 400 });
+      return NextResponse.json({ error: "APIキーとシークレットが必要です" }, { status: 400 });
     }
-    
-    console.log("API Key length:", apiKey.length);
-    console.log("API Secret length:", apiSecret.length);
-    console.log("API Key first 8:", apiKey.slice(0, 8));
-    console.log("Full body keys:", Object.keys(body));
-    
+
     const client = new BitbankClient(apiKey, apiSecret);
 
-    const [assetsRes, spotTrades, tickers] = await Promise.all([
+    // 残高・ティッカーを並列取得
+    const [assetsRes, tickers] = await Promise.all([
       client.getAssets(),
-      market !== "margin" ? client.getAllSpotTrades(SPOT_PAIRS) : Promise.resolve([]),
       BitbankClient.getMultiTicker(SPOT_PAIRS),
     ]);
 
-    let marginPositions: import("@/lib/calc").BitbankMarginPosition[] = [];
+    // 現物取引履歴を順番に取得（並列だとレート制限エラーになる）
+    let spotTrades: import("@/lib/calc").BitbankTrade[] = [];
+    if (market !== "margin") {
+      spotTrades = await client.getAllSpotTrades(SPOT_PAIRS);
+    }
+
+    // 信用取引ポジション
+    let closedMarginPositions: import("@/lib/calc").BitbankMarginPosition[] = [];
     let openMarginPositions: import("@/lib/calc").BitbankMarginPosition[] = [];
 
     if (market !== "spot") {
@@ -46,19 +47,21 @@ export async function POST(req: NextRequest) {
           client.getMarginPositions("closed"),
           client.getOpenMarginPositions(),
         ]);
-        marginPositions = closedRes.positions;
-        openMarginPositions = openRes.positions;
+        closedMarginPositions = closedRes.positions ?? [];
+        openMarginPositions = openRes.positions ?? [];
       } catch {
-        // margin not enabled
+        // 信用取引未対応アカウントはスキップ
       }
     }
-   
-    console.log("Spot trades count:", spotTrades.length);
-    console.log("Assets count:", assetsRes.assets.length);
+
+    // 期間フィルタ
     const filteredSpot = filterByPeriod(spotTrades, period);
+
+    // 損益計算
     const calcFn = method === "moving_average" ? calcMovingAverage : calcTotalAverage;
     const spotState = calcFn(filteredSpot);
 
+    // 現物実現損益集計
     let spotRealized = 0;
     let spotWins = 0;
     let spotLosses = 0;
@@ -68,9 +71,10 @@ export async function POST(req: NextRequest) {
       else if (s.realized < 0) spotLosses++;
     });
 
-    const filteredMargin = marginPositions.filter((p) => {
+    // 信用取引: 期間フィルタ
+    const filteredMargin = closedMarginPositions.filter((p) => {
       if (period === "all") return true;
-      const d = new Date(p.closed_at ?? p.created_at);
+      const d = new Date((p.closed_at ?? p.created_at));
       const now = new Date();
       if (period === "daily") return d.toDateString() === now.toDateString();
       if (period === "monthly")
@@ -79,11 +83,13 @@ export async function POST(req: NextRequest) {
       return true;
     });
 
+    // 信用実現損益
     let marginRealized = 0;
     filteredMargin.forEach((p) => {
       marginRealized += parseFloat(p.profit_loss ?? "0");
     });
 
+    // 現物未実現損益
     let spotUnrealized = 0;
     const byAsset: {
       asset: string;
@@ -98,16 +104,27 @@ export async function POST(req: NextRequest) {
       const pair = asset.toLowerCase() + "_jpy";
       const ticker = tickers[pair];
       const currentPrice = ticker ? parseFloat(ticker.last) : 0;
-      const unrealized = s.qty * (currentPrice - s.avgCost);
+      const unrealized = s.qty > 0 ? s.qty * (currentPrice - s.avgCost) : 0;
       spotUnrealized += unrealized;
-      byAsset.push({ asset, realized: s.realized, unrealized, avgCost: s.avgCost, currentPrice, quantity: s.qty });
+      if (s.qty > 0 || s.realized !== 0) {
+        byAsset.push({
+          asset,
+          realized: s.realized,
+          unrealized,
+          avgCost: s.avgCost,
+          currentPrice,
+          quantity: s.qty,
+        });
+      }
     });
 
+    // 信用未実現損益（オープンポジション）
     let marginUnrealized = 0;
     openMarginPositions.forEach((p) => {
       marginUnrealized += parseFloat(p.profit_loss ?? "0");
     });
 
+    // 市場別集計
     const totalRealized =
       market === "spot" ? spotRealized :
       market === "margin" ? marginRealized :
@@ -118,15 +135,16 @@ export async function POST(req: NextRequest) {
       market === "margin" ? marginUnrealized :
       spotUnrealized + marginUnrealized;
 
+    // チャート用データ
     const groups = groupByPeriod(spotTrades, period);
     const records = groups.map((g) => {
-      const st = calcFn(g.trades);
+      const st = calcFn(filterByPeriod(g.trades, "all"));
       let r = 0;
       Array.from(st.values()).forEach((s) => { r += s.realized; });
-      return { label: g.label, realized: r, tradeCount: g.trades.length };
+      return { label: g.label, realized: r, tradeCount: g.trades.filter(t => t.side === "sell").length };
     });
 
-    const totalTrades = filteredSpot.length + filteredMargin.length;
+    const totalTrades = filteredSpot.filter(t => t.side === "sell").length + filteredMargin.length;
     const winRate =
       spotWins + spotLosses > 0
         ? Math.round((spotWins / (spotWins + spotLosses)) * 100)
