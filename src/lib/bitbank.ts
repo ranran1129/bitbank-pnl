@@ -69,18 +69,30 @@ export class BitbankClient {
   }
 
   // 現物・信用の全取引履歴を取得（同エンドポイントに混在、position_side で判別）
-  async getAllSpotTrades(pairs: string[], count = 1000) {
+  // エラー発生時はスキップせずエラー情報を返す
+  async getAllSpotTrades(pairs: string[], count = 1000): Promise<{
+    trades: import("./calc").BitbankTrade[];
+    errors: { pair: string; error: string }[];
+  }> {
     const trades: import("./calc").BitbankTrade[] = [];
+    const errors: { pair: string; error: string }[] = [];
+
     for (const pair of pairs) {
       try {
         await new Promise((r) => setTimeout(r, 200));
         const res = await this.getSpotTrades(pair, count);
         trades.push(...res.trades);
-      } catch {
-        // skip failed pairs
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        errors.push({ pair, error: msg });
+        console.error(`[bitbank] getSpotTrades(${pair}) failed: ${msg}`);
       }
     }
-    return trades.sort((a, b) => a.executed_at - b.executed_at);
+
+    return {
+      trades: trades.sort((a, b) => a.executed_at - b.executed_at),
+      errors,
+    };
   }
 
   // 信用オープンポジション: GET /user/margin/positions

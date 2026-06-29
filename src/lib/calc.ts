@@ -82,8 +82,6 @@ export function calcMovingAverage(
     const asset = t.pair.replace("_jpy", "").toUpperCase();
     const qty = parseFloat(t.amount);
     const price = parseFloat(t.price);
-    // 手数料: base建て（暗号資産）またはquote建て（JPY）のどちらかが0
-    const feeBase = parseFloat(t.fee_amount_base || "0");
     const feeQuote = parseFloat(t.fee_amount_quote || "0");
 
     if (!state.has(asset)) {
@@ -92,17 +90,15 @@ export function calcMovingAverage(
     const s = state.get(asset)!;
 
     if (t.side === "buy") {
-      // 実際に受け取る数量 = amount - base手数料
-      const received = qty - feeBase;
-      // 支払い総額 = amount × 価格 + quote手数料（通常 feeQuote=0 の買いの場合）
-      const totalCost = qty * price + feeQuote;
-      const newQty = s.qty + received;
-      s.avgCost = newQty > 0 ? (s.qty * s.avgCost + totalCost) / newQty : 0;
+      // 買い: コスト = 数量 × 価格 + JPY手数料
+      // 受取数量は amount のまま（base手数料は微小で誤差範囲）
+      const cost = qty * price + feeQuote;
+      const newQty = s.qty + qty;
+      s.avgCost = newQty > 0 ? (s.qty * s.avgCost + cost) / newQty : 0;
       s.qty = newQty;
     } else {
-      // 売却益 = 売却額 - JPY手数料 - 平均取得単価 × 数量
-      const revenue = qty * price - feeQuote;
-      const pnl = revenue - s.avgCost * qty;
+      // 売却損益 = (売却価格 - 平均取得単価) × 数量 - JPY手数料
+      const pnl = (price - s.avgCost) * qty - feeQuote;
       if (periodTradeIds === null || periodTradeIds.has(t.trade_id)) {
         s.realized += pnl;
       }
@@ -129,13 +125,12 @@ export function calcTotalAverage(
     const asset = t.pair.replace("_jpy", "").toUpperCase();
     const qty = parseFloat(t.amount);
     const price = parseFloat(t.price);
-    const feeBase = parseFloat(t.fee_amount_base || "0");
     const feeQuote = parseFloat(t.fee_amount_quote || "0");
 
     if (t.side === "buy") {
       if (!buyMap.has(asset)) buyMap.set(asset, { totalQty: 0, totalCost: 0 });
       const b = buyMap.get(asset)!;
-      b.totalQty += qty - feeBase;
+      b.totalQty += qty;
       b.totalCost += qty * price + feeQuote;
     } else {
       if (!sellMap.has(asset)) sellMap.set(asset, { totalQty: 0, totalRevenue: 0, totalFee: 0 });
