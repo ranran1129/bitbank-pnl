@@ -71,7 +71,7 @@ export default function Page() {
   const [showSecret, setShowSecret] = useState(false);
   const [showApiPanel, setShowApiPanel] = useState(false);
   const [method, setMethod] = useState<CalcMethod>("moving_average");
-  const [period, setPeriod] = useState<PeriodType>("monthly");
+  const [period, setPeriod] = useState<PeriodType>("all");
   const [market, setMarket] = useState<MarketType>("all");
   const [data, setData] = useState<DashboardState | null>(null);
   const [loading, setLoading] = useState(false);
@@ -349,7 +349,7 @@ export default function Page() {
               ],
             },
             {
-              label: "集計期間",
+              label: "チャート期間",
               value: period,
               onChange: (v: string) => handlePeriod(v as PeriodType),
               opts: [
@@ -481,7 +481,7 @@ export default function Page() {
                   icon: <TrendingUp size={15} />,
                   label: "実現損益",
                   value: fmtJPY(data.totalRealized),
-                  sub: method === "moving_average" ? "移動平均法" : "総平均法",
+                  sub: `全期間 · ${method === "moving_average" ? "移動平均法" : "総平均法"}`,
                   pos: data.totalRealized >= 0,
                 },
                 {
@@ -495,7 +495,7 @@ export default function Page() {
                   icon: <Wallet size={15} />,
                   label: "総損益",
                   value: fmtJPY(data.totalPnL),
-                  sub: "実現 + 未実現",
+                  sub: "全期間 · 実現 + 未実現",
                   pos: data.totalPnL >= 0,
                 },
                 {

@@ -12,7 +12,7 @@ import {
   type BitbankOpenPosition,
 } from "@/lib/calc";
 
-const MIN_QTY = 1e-8; // 浮動小数点誤差を除外する閾値
+const MIN_QTY = 1e-8;
 
 export async function POST(req: NextRequest) {
   try {
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
     const apiKey = body.apiKey as string;
     const apiSecret = body.apiSecret as string;
     const method = (body.method ?? "moving_average") as CalcMethod;
-    const period = (body.period ?? "monthly") as PeriodType;
+    const period = (body.period ?? "all") as PeriodType;
     const market = (body.market ?? "all") as MarketType;
 
     if (!apiKey || !apiSecret) {
@@ -57,29 +57,34 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ===== 現物 P&L 計算 =====
-    const filteredSpot = market !== "margin" ? filterByPeriod(spotTrades, period) : [];
-    const periodSpotIds = new Set(filteredSpot.map((t) => t.trade_id));
-
-    // 期間サマリー用（上部カードの実現損益）
-    const spotStatePeriod =
+    // =====================================================
+    // 全期間ベースの計算（サマリーカード・銘柄別詳細用）
+    // 期間フィルタは一切かけない
+    // =====================================================
+    const spotStateAllTime =
       method === "moving_average"
-        ? calcMovingAverage(spotTrades, periodSpotIds)
-        : calcTotalAverage(filteredSpot, spotTrades);
+        ? calcMovingAverage(spotTrades, null)
+        : calcTotalAverage(spotTrades, spotTrades);
 
-    // 全期間用（銘柄別詳細テーブルの実現損益・保有数量）
-    const spotStateAllTime = calcMovingAverage(spotTrades, null);
-
-    let spotRealized = 0;
+    // 現物: 全期間実現損益・勝敗
+    let spotRealizedAllTime = 0;
     let spotWins = 0;
     let spotLosses = 0;
-    Array.from(spotStatePeriod.values()).forEach((s) => {
-      spotRealized += s.realized;
+    Array.from(spotStateAllTime.values()).forEach((s) => {
+      spotRealizedAllTime += s.realized;
       if (s.realized > 0) spotWins++;
       else if (s.realized < 0) spotLosses++;
     });
 
-    // 未実現損益と銘柄別詳細は全期間の保有状況から計算
+    // 信用: 全期間実現損益（profit_loss フィールドを合算）
+    const allMarginForSummary = market !== "spot" ? marginTrades : [];
+    let marginRealizedAllTime = 0;
+    allMarginForSummary.forEach((t) => {
+      const pnl = parseFloat(t.profit_loss ?? "0");
+      if (!isNaN(pnl) && pnl !== 0) marginRealizedAllTime += pnl;
+    });
+
+    // 現物未実現損益と銘柄別詳細（全期間の保有状況から算出）
     let spotUnrealized = 0;
     const byAsset: {
       asset: string;
@@ -91,30 +96,22 @@ export async function POST(req: NextRequest) {
     }[] = [];
 
     Array.from(spotStateAllTime.entries()).forEach(([asset, s]) => {
-      if (s.qty < MIN_QTY && s.realized === 0) return; // 浮動小数点誤差・取引なし銘柄を除外
       const pair = asset.toLowerCase() + "_jpy";
       const ticker = tickers[pair];
       const currentPrice = ticker ? parseFloat(ticker.last) : 0;
-      const unrealized = s.qty >= MIN_QTY ? s.qty * (currentPrice - s.avgCost) : 0;
+      const qty = s.qty >= MIN_QTY ? s.qty : 0;
+      const unrealized = qty > 0 ? qty * (currentPrice - s.avgCost) : 0;
       spotUnrealized += unrealized;
-      if (s.qty >= MIN_QTY || Math.abs(s.realized) > 0) {
+      if (qty > 0 || Math.abs(s.realized) > 0) {
         byAsset.push({
           asset,
-          realized: s.realized,        // 全期間の実現損益
+          realized: s.realized,
           unrealized,
           avgCost: s.avgCost,
           currentPrice,
-          quantity: s.qty >= MIN_QTY ? s.qty : 0,
+          quantity: qty,
         });
       }
-    });
-
-    // ===== 信用 P&L 計算 =====
-    const filteredMargin = market !== "spot" ? filterByPeriod(marginTrades, period) : [];
-    let marginRealized = 0;
-    filteredMargin.forEach((t) => {
-      const pnl = parseFloat(t.profit_loss ?? "0");
-      if (!isNaN(pnl) && pnl !== 0) marginRealized += pnl;
     });
 
     // 信用未実現損益
@@ -150,30 +147,45 @@ export async function POST(req: NextRequest) {
       });
     });
 
-    // ===== 市場別集計（サマリーカード用）=====
+    // =====================================================
+    // サマリーカード（全期間合計、市場フィルタのみ適用）
+    // =====================================================
     const totalRealized =
-      market === "spot" ? spotRealized
-      : market === "margin" ? marginRealized
-      : spotRealized + marginRealized;
+      market === "spot" ? spotRealizedAllTime
+      : market === "margin" ? marginRealizedAllTime
+      : spotRealizedAllTime + marginRealizedAllTime;
 
     const totalUnrealized =
       market === "spot" ? spotUnrealized
       : market === "margin" ? marginUnrealized
       : spotUnrealized + marginUnrealized;
 
-    // ===== チャート用データ =====
-    // 現物: 期間内トレードをグループ化して損益計算
-    // 信用: profit_loss を集計
-    // 全市場: 両方を合算
-    const spotGroups = market !== "margin" ? groupByPeriod(filteredSpot, period) : [];
-    const marginGroups = market !== "spot" ? groupByPeriod(filteredMargin, period) : [];
+    const totalTradesAllTime =
+      spotTrades.filter((t) => t.side === "sell").length +
+      allMarginForSummary.filter((t) => {
+        const pnl = parseFloat(t.profit_loss ?? "0");
+        return !isNaN(pnl) && pnl !== 0;
+      }).length;
 
-    // ラベルの全集合を作成してグループを合算
+    const winRate =
+      spotWins + spotLosses > 0
+        ? Math.round((spotWins / (spotWins + spotLosses)) * 100)
+        : 0;
+
+    // =====================================================
+    // チャート用データ（期間フィルタを適用した内訳）
+    // =====================================================
+    const filteredSpot = market !== "margin" ? filterByPeriod(spotTrades, period) : [];
+    const filteredMargin = market !== "spot" ? filterByPeriod(marginTrades, period) : [];
+
+    const spotGroups = groupByPeriod(filteredSpot, period);
+    const marginGroups = groupByPeriod(filteredMargin, period);
+
     const labelMap = new Map<string, { realized: number; tradeCount: number }>();
 
     spotGroups.forEach((g) => {
-      const spotGroupIds = new Set(g.trades.map((t) => t.trade_id));
-      const st = calcMovingAverage(spotTrades, spotGroupIds);
+      const groupIds = new Set(g.trades.map((t) => t.trade_id));
+      const st = calcMovingAverage(spotTrades, groupIds);
       let r = 0;
       Array.from(st.values()).forEach((s) => { r += s.realized; });
       const entry = labelMap.get(g.label) ?? { realized: 0, tradeCount: 0 };
@@ -201,23 +213,11 @@ export async function POST(req: NextRequest) {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([label, v]) => ({ label, realized: v.realized, tradeCount: v.tradeCount }));
 
-    const totalTrades =
-      filteredSpot.filter((t) => t.side === "sell").length +
-      filteredMargin.filter((t) => {
-        const pnl = parseFloat(t.profit_loss ?? "0");
-        return !isNaN(pnl) && pnl !== 0;
-      }).length;
-
-    const winRate =
-      spotWins + spotLosses > 0
-        ? Math.round((spotWins / (spotWins + spotLosses)) * 100)
-        : 0;
-
     return NextResponse.json({
       totalRealized,
       totalUnrealized,
       totalPnL: totalRealized + totalUnrealized,
-      tradeCount: totalTrades,
+      tradeCount: totalTradesAllTime,
       winRate,
       records,
       byAsset: byAsset.sort((a, b) => b.realized - a.realized),
@@ -228,8 +228,6 @@ export async function POST(req: NextRequest) {
         allTradesCount: allTrades.length,
         spotTradesCount: spotTrades.length,
         marginTradesCount: marginTrades.length,
-        filteredSpotCount: filteredSpot.length,
-        filteredMarginCount: filteredMargin.length,
         fetchErrors,
       },
     });
