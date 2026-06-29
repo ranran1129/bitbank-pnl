@@ -58,7 +58,7 @@ export interface BitbankTicker {
 }
 
 export type CalcMethod = "moving_average" | "total_average";
-export type PeriodType = "daily" | "monthly" | "yearly" | "all";
+export type PeriodType = "daily" | "weekly" | "monthly" | "yearly" | "all";
 export type MarketType = "all" | "spot" | "margin";
 
 export interface AssetPnL {
@@ -71,21 +71,22 @@ export interface AssetPnL {
 }
 
 // ===== 移動平均法 =====
-// 買いのたびに平均取得単価を更新し、売りで損益を確定する
+// 全取引履歴を時系列で処理して正しい平均取得単価を維持する。
+// periodTradeIds を渡すと、その期間内の売りに対するP&Lのみ realized に集計する。
+// periodTradeIds が null の場合は全売りを集計（全期間モード）。
 
 export function calcMovingAverage(
-  trades: BitbankTrade[]
+  allTrades: BitbankTrade[],
+  periodTradeIds: Set<number> | null = null
 ): Map<string, { qty: number; avgCost: number; realized: number }> {
   const state = new Map<string, { qty: number; avgCost: number; realized: number }>();
 
-  // 時系列順にソート
-  const sorted = [...trades].sort((a, b) => a.executed_at - b.executed_at);
+  const sorted = [...allTrades].sort((a, b) => a.executed_at - b.executed_at);
 
   for (const t of sorted) {
     const asset = t.pair.replace("_jpy", "").toUpperCase();
     const qty = parseFloat(t.amount);
     const price = parseFloat(t.price);
-    // 手数料（quote建て）
     const fee = parseFloat(t.fee_amount_quote || "0");
 
     if (!state.has(asset)) {
@@ -94,18 +95,17 @@ export function calcMovingAverage(
     const s = state.get(asset)!;
 
     if (t.side === "buy") {
-      // 移動平均法: 新しい平均単価を更新
-      // 買付金額 = 数量 × 価格 + 手数料
       const buyAmount = qty * price + fee;
       const newQty = s.qty + qty;
       s.avgCost = newQty > 0 ? (s.qty * s.avgCost + buyAmount) / newQty : 0;
       s.qty = newQty;
     } else {
-      // 売却: 損益 = (売価 - 平均取得単価) × 数量 - 手数料
       const pnl = (price - s.avgCost) * qty - fee;
-      s.realized += pnl;
+      // 期間指定がない、または期間内の売りのみP&Lを集計
+      if (periodTradeIds === null || periodTradeIds.has(t.trade_id)) {
+        s.realized += pnl;
+      }
       s.qty = Math.max(0, s.qty - qty);
-      // 全売却時は平均単価リセット
       if (s.qty === 0) s.avgCost = 0;
     }
   }
@@ -114,15 +114,18 @@ export function calcMovingAverage(
 }
 
 // ===== 総平均法 =====
-// 期間全体の買い合計から平均単価を算出して損益を計算する
+// 期間内の買い合計から平均単価を算出して損益を計算する。
+// allTrades を渡して全履歴ベースの qty/avgCost も別途返す。
 
 export function calcTotalAverage(
-  trades: BitbankTrade[]
+  periodTrades: BitbankTrade[],
+  allTrades: BitbankTrade[]
 ): Map<string, { qty: number; avgCost: number; realized: number }> {
+  // 期間内の損益計算
   const buyMap = new Map<string, { totalQty: number; totalCost: number }>();
   const sellMap = new Map<string, { totalQty: number; totalRevenue: number; totalFee: number }>();
 
-  for (const t of trades) {
+  for (const t of periodTrades) {
     const asset = t.pair.replace("_jpy", "").toUpperCase();
     const qty = parseFloat(t.amount);
     const price = parseFloat(t.price);
@@ -142,14 +145,25 @@ export function calcTotalAverage(
     }
   }
 
+  // 全履歴から現在の保有qty・avgCostを取得（未実現損益の正確な計算のため）
+  const allState = calcMovingAverage(allTrades, null);
+
   const result = new Map<string, { qty: number; avgCost: number; realized: number }>();
 
-  for (const [asset, buy] of Array.from(buyMap.entries())) {
-    const avgCost = buy.totalQty > 0 ? buy.totalCost / buy.totalQty : 0;
+  // 期間内に売買があった銘柄を処理
+  const assets = new Set([...buyMap.keys(), ...sellMap.keys()]);
+  for (const asset of assets) {
+    const buy = buyMap.get(asset) ?? { totalQty: 0, totalCost: 0 };
     const sell = sellMap.get(asset) ?? { totalQty: 0, totalRevenue: 0, totalFee: 0 };
+    const avgCost = buy.totalQty > 0 ? buy.totalCost / buy.totalQty : 0;
     const realized = sell.totalRevenue - sell.totalQty * avgCost - sell.totalFee;
-    const remainQty = Math.max(0, buy.totalQty - sell.totalQty);
-    result.set(asset, { qty: remainQty, avgCost, realized });
+    // 保有数量・平均単価は全履歴ベースを使用
+    const allS = allState.get(asset);
+    result.set(asset, {
+      qty: allS?.qty ?? 0,
+      avgCost: allS?.avgCost ?? 0,
+      realized,
+    });
   }
 
   return result;
@@ -166,7 +180,6 @@ export function filterByPeriod(
 
   const now = referenceDate;
   return trades.filter((t) => {
-    // bitbankのexecuted_atはミリ秒
     const d = new Date(t.executed_at);
     if (period === "daily") {
       return (
@@ -174,6 +187,17 @@ export function filterByPeriod(
         d.getMonth() === now.getMonth() &&
         d.getDate() === now.getDate()
       );
+    }
+    if (period === "weekly") {
+      // 今週月曜00:00〜今週日曜23:59:59
+      const dayOfWeek = now.getDay(); // 0=日, 1=月, ...
+      const monday = new Date(now);
+      monday.setDate(now.getDate() - ((dayOfWeek + 6) % 7));
+      monday.setHours(0, 0, 0, 0);
+      const sunday = new Date(monday);
+      sunday.setDate(monday.getDate() + 6);
+      sunday.setHours(23, 59, 59, 999);
+      return d >= monday && d <= sunday;
     }
     if (period === "monthly") {
       return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
@@ -198,9 +222,9 @@ export function groupByPeriod(
     let key: string;
 
     if (period === "yearly") {
-      key = String(d.getMonth() + 1) + "月";
-    } else if (period === "monthly") {
-      key = String(d.getDate()) + "日";
+      key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    } else if (period === "monthly" || period === "weekly") {
+      key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     } else {
       // daily or all: group by month
       key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -211,10 +235,17 @@ export function groupByPeriod(
   }
 
   const entries = Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
-  return entries.map(([k, v]) => ({
-    label: period === "all" ? k.slice(5) + "月" : k,
-    trades: v,
-  }));
+  return entries.map(([k, v]) => {
+    let label: string;
+    if (period === "yearly") {
+      label = k.slice(5).replace("-", "") + "月";
+    } else if (period === "monthly" || period === "weekly") {
+      label = String(parseInt(k.slice(8))) + "日";
+    } else {
+      label = k.slice(5).replace("-", "") + "月";
+    }
+    return { label, trades: v };
+  });
 }
 
 // ===== フォーマットヘルパー =====

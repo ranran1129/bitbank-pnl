@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import type { CalcMethod, PeriodType, MarketType } from "@/lib/calc";
 import { fmtJPY } from "@/lib/calc";
 import { PnLChart } from "@/components/PnLChart";
@@ -55,6 +55,21 @@ interface DashboardState {
 export default function Page() {
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
+
+  // localStorageからAPIキーを復元
+  useEffect(() => {
+    setApiKey(localStorage.getItem("bb_api_key") ?? "");
+    setApiSecret(localStorage.getItem("bb_api_secret") ?? "");
+  }, []);
+
+  const handleApiKeyChange = (v: string) => {
+    setApiKey(v);
+    localStorage.setItem("bb_api_key", v);
+  };
+  const handleApiSecretChange = (v: string) => {
+    setApiSecret(v);
+    localStorage.setItem("bb_api_secret", v);
+  };
   const [showSecret, setShowSecret] = useState(false);
   const [showApiPanel, setShowApiPanel] = useState(false);
   const [method, setMethod] = useState<CalcMethod>("moving_average");
@@ -228,7 +243,7 @@ export default function Page() {
                 <input
                   type="text"
                   value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
+                  onChange={(e) => handleApiKeyChange(e.target.value)}
                   placeholder="bitbank API Key"
                   style={{ width: "100%", padding: "8px 12px", fontSize: 13 }}
                 />
@@ -250,7 +265,7 @@ export default function Page() {
                   <input
                     type={showSecret ? "text" : "password"}
                     value={apiSecret}
-                    onChange={(e) => setApiSecret(e.target.value)}
+                    onChange={(e) => handleApiSecretChange(e.target.value)}
                     placeholder="bitbank API Secret"
                     style={{ width: "100%", padding: "8px 36px 8px 12px", fontSize: 13 }}
                   />
@@ -341,6 +356,7 @@ export default function Page() {
               onChange: (v: string) => handlePeriod(v as PeriodType),
               opts: [
                 { v: "daily", l: "日次" },
+                { v: "weekly", l: "週次" },
                 { v: "monthly", l: "月次" },
                 { v: "yearly", l: "年次" },
                 { v: "all", l: "全期間" },
