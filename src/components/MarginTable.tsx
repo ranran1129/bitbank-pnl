@@ -2,14 +2,14 @@
 
 import { fmtJPY } from "@/lib/calc";
 
+// APIの /user/margin/positions には position_id・liq_price がないため
+// pair+side をキーとして使い、清算価格列は非表示にする
 interface Position {
-  position_id: number;
   pair: string;
   side: string;
   amount: string;
   price: string;
   profit_loss: string;
-  liq_price: string;
 }
 
 interface Props {
@@ -21,7 +21,7 @@ export function MarginTable({ positions }: Props) {
     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
       <thead>
         <tr>
-          {["ペア", "方向", "数量", "建値", "清算価格", "損益"].map((h) => (
+          {["ペア", "方向", "数量", "建値（平均）", "未実現損益"].map((h) => (
             <th
               key={h}
               style={{
@@ -40,10 +40,10 @@ export function MarginTable({ positions }: Props) {
         </tr>
       </thead>
       <tbody>
-        {positions.map((p) => {
+        {positions.map((p, i) => {
           const pnl = parseFloat(p.profit_loss ?? "0");
           return (
-            <tr key={p.position_id}>
+            <tr key={`${p.pair}-${p.side}-${i}`}>
               <td
                 style={{
                   padding: "10px 8px",
@@ -93,17 +93,6 @@ export function MarginTable({ positions }: Props) {
                 }}
               >
                 ¥{parseFloat(p.price).toLocaleString()}
-              </td>
-              <td
-                style={{
-                  padding: "10px 8px",
-                  borderBottom: "1px solid var(--border)",
-                  textAlign: "right",
-                  fontFamily: "monospace",
-                  color: "var(--danger)",
-                }}
-              >
-                ¥{parseFloat(p.liq_price || "0").toLocaleString()}
               </td>
               <td
                 style={{

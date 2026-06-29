@@ -61,14 +61,15 @@ export class BitbankClient {
     return this.privateGet<{ assets: import("./calc").BitbankAsset[] }>("/user/assets");
   }
 
-  async getSpotTrades(pair: string, count = 100) {
+  async getSpotTrades(pair: string, count = 1000) {
     return this.privateGet<{ trades: import("./calc").BitbankTrade[] }>(
       `/user/spot/trade_history`,
       { pair, count: String(count) }
     );
   }
 
-  async getAllSpotTrades(pairs: string[], count = 100) {
+  // 現物・信用の全取引履歴を取得（同エンドポイントに混在、position_side で判別）
+  async getAllSpotTrades(pairs: string[], count = 1000) {
     const trades: import("./calc").BitbankTrade[] = [];
     for (const pair of pairs) {
       try {
@@ -82,15 +83,9 @@ export class BitbankClient {
     return trades.sort((a, b) => a.executed_at - b.executed_at);
   }
 
-  async getMarginPositions(status: "open" | "closed" = "closed") {
-    return this.privateGet<{ positions: import("./calc").BitbankMarginPosition[] }>(
-      "/user/margin/position_history",
-      { status }
-    );
-  }
-
+  // 信用オープンポジション: GET /user/margin/positions
   async getOpenMarginPositions() {
-    return this.privateGet<{ positions: import("./calc").BitbankMarginPosition[] }>(
+    return this.privateGet<{ positions: import("./calc").BitbankOpenPosition[] }>(
       "/user/margin/positions"
     );
   }

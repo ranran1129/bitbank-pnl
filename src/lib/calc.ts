@@ -24,26 +24,21 @@ export interface BitbankTrade {
   maker_taker: "maker" | "taker";
   fee_amount_base: string;
   fee_amount_quote: string;
+  profit_loss?: string;   // 信用決済時の実現損益（APIが返す値）
+  interest?: string;      // 信用取引利息
   order_id: number;
   executed_at: number;
 }
 
-export interface BitbankMarginPosition {
-  position_id: number;
+// 実際のAPIレスポンス: GET /user/margin/positions
+export interface BitbankOpenPosition {
   pair: string;
-  side: "long" | "short";
-  amount: string;
-  all_amount: string;
-  price: string;
-  stop_loss_price: string;
-  take_profit_price: string;
-  profit_loss: string;
-  liq_price: string;
-  fee: string;
-  swap: string;
-  created_at: number;
-  closed_at?: number;
-  status: "open" | "closed";
+  position_side: "long" | "short";
+  open_amount: string;
+  product: string;
+  average_price: string;
+  unrealized_fee_amount: string;
+  unrealized_interest_amount: string;
 }
 
 export interface BitbankTicker {
@@ -87,7 +82,9 @@ export function calcMovingAverage(
     const asset = t.pair.replace("_jpy", "").toUpperCase();
     const qty = parseFloat(t.amount);
     const price = parseFloat(t.price);
-    const fee = parseFloat(t.fee_amount_quote || "0");
+    // 手数料: base建て（暗号資産）またはquote建て（JPY）のどちらかが0
+    const feeBase = parseFloat(t.fee_amount_base || "0");
+    const feeQuote = parseFloat(t.fee_amount_quote || "0");
 
     if (!state.has(asset)) {
       state.set(asset, { qty: 0, avgCost: 0, realized: 0 });
@@ -95,13 +92,17 @@ export function calcMovingAverage(
     const s = state.get(asset)!;
 
     if (t.side === "buy") {
-      const buyAmount = qty * price + fee;
-      const newQty = s.qty + qty;
-      s.avgCost = newQty > 0 ? (s.qty * s.avgCost + buyAmount) / newQty : 0;
+      // 実際に受け取る数量 = amount - base手数料
+      const received = qty - feeBase;
+      // 支払い総額 = amount × 価格 + quote手数料（通常 feeQuote=0 の買いの場合）
+      const totalCost = qty * price + feeQuote;
+      const newQty = s.qty + received;
+      s.avgCost = newQty > 0 ? (s.qty * s.avgCost + totalCost) / newQty : 0;
       s.qty = newQty;
     } else {
-      const pnl = (price - s.avgCost) * qty - fee;
-      // 期間指定がない、または期間内の売りのみP&Lを集計
+      // 売却益 = 売却額 - JPY手数料 - 平均取得単価 × 数量
+      const revenue = qty * price - feeQuote;
+      const pnl = revenue - s.avgCost * qty;
       if (periodTradeIds === null || periodTradeIds.has(t.trade_id)) {
         s.realized += pnl;
       }
@@ -115,13 +116,12 @@ export function calcMovingAverage(
 
 // ===== 総平均法 =====
 // 期間内の買い合計から平均単価を算出して損益を計算する。
-// allTrades を渡して全履歴ベースの qty/avgCost も別途返す。
+// allTrades を渡して全履歴ベースの qty/avgCost も別途使用する。
 
 export function calcTotalAverage(
   periodTrades: BitbankTrade[],
   allTrades: BitbankTrade[]
 ): Map<string, { qty: number; avgCost: number; realized: number }> {
-  // 期間内の損益計算
   const buyMap = new Map<string, { totalQty: number; totalCost: number }>();
   const sellMap = new Map<string, { totalQty: number; totalRevenue: number; totalFee: number }>();
 
@@ -129,35 +129,34 @@ export function calcTotalAverage(
     const asset = t.pair.replace("_jpy", "").toUpperCase();
     const qty = parseFloat(t.amount);
     const price = parseFloat(t.price);
-    const fee = parseFloat(t.fee_amount_quote || "0");
+    const feeBase = parseFloat(t.fee_amount_base || "0");
+    const feeQuote = parseFloat(t.fee_amount_quote || "0");
 
     if (t.side === "buy") {
       if (!buyMap.has(asset)) buyMap.set(asset, { totalQty: 0, totalCost: 0 });
       const b = buyMap.get(asset)!;
-      b.totalQty += qty;
-      b.totalCost += qty * price + fee;
+      b.totalQty += qty - feeBase;
+      b.totalCost += qty * price + feeQuote;
     } else {
       if (!sellMap.has(asset)) sellMap.set(asset, { totalQty: 0, totalRevenue: 0, totalFee: 0 });
       const s = sellMap.get(asset)!;
       s.totalQty += qty;
       s.totalRevenue += qty * price;
-      s.totalFee += fee;
+      s.totalFee += feeQuote;
     }
   }
 
-  // 全履歴から現在の保有qty・avgCostを取得（未実現損益の正確な計算のため）
+  // 保有qty・avgCostは全履歴ベース（未実現損益の正確な計算のため）
   const allState = calcMovingAverage(allTrades, null);
 
   const result = new Map<string, { qty: number; avgCost: number; realized: number }>();
 
-  // 期間内に売買があった銘柄を処理
   const assets = new Set([...buyMap.keys(), ...sellMap.keys()]);
   for (const asset of assets) {
     const buy = buyMap.get(asset) ?? { totalQty: 0, totalCost: 0 };
     const sell = sellMap.get(asset) ?? { totalQty: 0, totalRevenue: 0, totalFee: 0 };
     const avgCost = buy.totalQty > 0 ? buy.totalCost / buy.totalQty : 0;
     const realized = sell.totalRevenue - sell.totalQty * avgCost - sell.totalFee;
-    // 保有数量・平均単価は全履歴ベースを使用
     const allS = allState.get(asset);
     result.set(asset, {
       qty: allS?.qty ?? 0,
@@ -189,8 +188,7 @@ export function filterByPeriod(
       );
     }
     if (period === "weekly") {
-      // 今週月曜00:00〜今週日曜23:59:59
-      const dayOfWeek = now.getDay(); // 0=日, 1=月, ...
+      const dayOfWeek = now.getDay();
       const monday = new Date(now);
       monday.setDate(now.getDate() - ((dayOfWeek + 6) % 7));
       monday.setHours(0, 0, 0, 0);
@@ -226,7 +224,6 @@ export function groupByPeriod(
     } else if (period === "monthly" || period === "weekly") {
       key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     } else {
-      // daily or all: group by month
       key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     }
 

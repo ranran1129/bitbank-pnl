@@ -42,13 +42,11 @@ interface DashboardState {
   }[];
   tickers: Record<string, { last: string; buy: string; sell: string }>;
   marginPositions: {
-    position_id: number;
     pair: string;
     side: string;
     amount: string;
     price: string;
     profit_loss: string;
-    liq_price: string;
   }[];
 }
 
