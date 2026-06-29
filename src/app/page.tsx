@@ -645,11 +645,14 @@ export default function Page() {
                   }}
                 >
                   銘柄別詳細
+                  <span style={{ fontSize: 10, color: "var(--text3)", marginLeft: 8, fontWeight: 400 }}>
+                    実現損益は全期間合計
+                  </span>
                 </div>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                   <thead>
                     <tr>
-                      {["銘柄", "保有数量", "平均取得単価", "現在価格", "実現損益", "未実現損益"].map(
+                      {["銘柄", "保有数量", "平均取得単価", "現在価格", "実現損益(全期間)", "未実現損益"].map(
                         (h) => (
                           <th
                             key={h}

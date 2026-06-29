@@ -12,6 +12,8 @@ import {
   type BitbankOpenPosition,
 } from "@/lib/calc";
 
+const MIN_QTY = 1e-8; // 浮動小数点誤差を除外する閾値
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -27,17 +29,14 @@ export async function POST(req: NextRequest) {
 
     const client = new BitbankClient(apiKey, apiSecret);
 
-    // 残高・ティッカーを並列取得
     const [assetsRes, tickers] = await Promise.all([
       client.getAssets(),
       BitbankClient.getMultiTicker(SPOT_PAIRS),
     ]);
 
-    // 取引履歴を取得（現物・信用が同一エンドポイントに混在）
     const { trades: allTrades, errors: fetchErrors } = await client.getAllSpotTrades(SPOT_PAIRS);
 
     // position_side で現物と信用を分離
-    // undefined / null / "" → 現物、"long" / "short" → 信用
     const spotTrades: BitbankTrade[] = allTrades.filter(
       (t) => t.position_side !== "long" && t.position_side !== "short"
     );
@@ -50,7 +49,9 @@ export async function POST(req: NextRequest) {
     if (market !== "spot") {
       try {
         const res = await client.getOpenMarginPositions();
-        openMarginPositions = res.positions ?? [];
+        openMarginPositions = (res.positions ?? []).filter(
+          (p) => parseFloat(p.open_amount) > 0
+        );
       } catch {
         // 信用取引未対応アカウントはスキップ
       }
@@ -60,21 +61,25 @@ export async function POST(req: NextRequest) {
     const filteredSpot = market !== "margin" ? filterByPeriod(spotTrades, period) : [];
     const periodSpotIds = new Set(filteredSpot.map((t) => t.trade_id));
 
-    const spotState =
+    // 期間サマリー用（上部カードの実現損益）
+    const spotStatePeriod =
       method === "moving_average"
         ? calcMovingAverage(spotTrades, periodSpotIds)
         : calcTotalAverage(filteredSpot, spotTrades);
 
+    // 全期間用（銘柄別詳細テーブルの実現損益・保有数量）
+    const spotStateAllTime = calcMovingAverage(spotTrades, null);
+
     let spotRealized = 0;
     let spotWins = 0;
     let spotLosses = 0;
-    Array.from(spotState.values()).forEach((s) => {
+    Array.from(spotStatePeriod.values()).forEach((s) => {
       spotRealized += s.realized;
       if (s.realized > 0) spotWins++;
       else if (s.realized < 0) spotLosses++;
     });
 
-    // 現物未実現損益
+    // 未実現損益と銘柄別詳細は全期間の保有状況から計算
     let spotUnrealized = 0;
     const byAsset: {
       asset: string;
@@ -85,19 +90,26 @@ export async function POST(req: NextRequest) {
       quantity: number;
     }[] = [];
 
-    Array.from(spotState.entries()).forEach(([asset, s]) => {
+    Array.from(spotStateAllTime.entries()).forEach(([asset, s]) => {
+      if (s.qty < MIN_QTY && s.realized === 0) return; // 浮動小数点誤差・取引なし銘柄を除外
       const pair = asset.toLowerCase() + "_jpy";
       const ticker = tickers[pair];
       const currentPrice = ticker ? parseFloat(ticker.last) : 0;
-      const unrealized = s.qty > 0 ? s.qty * (currentPrice - s.avgCost) : 0;
+      const unrealized = s.qty >= MIN_QTY ? s.qty * (currentPrice - s.avgCost) : 0;
       spotUnrealized += unrealized;
-      if (s.qty > 0 || s.realized !== 0) {
-        byAsset.push({ asset, realized: s.realized, unrealized, avgCost: s.avgCost, currentPrice, quantity: s.qty });
+      if (s.qty >= MIN_QTY || Math.abs(s.realized) > 0) {
+        byAsset.push({
+          asset,
+          realized: s.realized,        // 全期間の実現損益
+          unrealized,
+          avgCost: s.avgCost,
+          currentPrice,
+          quantity: s.qty >= MIN_QTY ? s.qty : 0,
+        });
       }
     });
 
     // ===== 信用 P&L 計算 =====
-    // 実現損益: APIが返す profit_loss フィールドを使用（クロージングトレードのみ非0）
     const filteredMargin = market !== "spot" ? filterByPeriod(marginTrades, period) : [];
     let marginRealized = 0;
     filteredMargin.forEach((t) => {
@@ -105,7 +117,7 @@ export async function POST(req: NextRequest) {
       if (!isNaN(pnl) && pnl !== 0) marginRealized += pnl;
     });
 
-    // 信用未実現損益: average_price と現在価格から計算
+    // 信用未実現損益
     let marginUnrealized = 0;
     const marginPositionsForDisplay: {
       pair: string;
@@ -138,7 +150,7 @@ export async function POST(req: NextRequest) {
       });
     });
 
-    // ===== 市場別集計 =====
+    // ===== 市場別集計（サマリーカード用）=====
     const totalRealized =
       market === "spot" ? spotRealized
       : market === "margin" ? marginRealized
@@ -150,26 +162,44 @@ export async function POST(req: NextRequest) {
       : spotUnrealized + marginUnrealized;
 
     // ===== チャート用データ =====
-    const chartTrades = market === "margin" ? filteredMargin : filteredSpot;
-    const groups = groupByPeriod(chartTrades, period);
-    const records = groups.map((g) => {
+    // 現物: 期間内トレードをグループ化して損益計算
+    // 信用: profit_loss を集計
+    // 全市場: 両方を合算
+    const spotGroups = market !== "margin" ? groupByPeriod(filteredSpot, period) : [];
+    const marginGroups = market !== "spot" ? groupByPeriod(filteredMargin, period) : [];
+
+    // ラベルの全集合を作成してグループを合算
+    const labelMap = new Map<string, { realized: number; tradeCount: number }>();
+
+    spotGroups.forEach((g) => {
+      const spotGroupIds = new Set(g.trades.map((t) => t.trade_id));
+      const st = calcMovingAverage(spotTrades, spotGroupIds);
       let r = 0;
-      if (market === "margin") {
-        g.trades.forEach((t) => {
-          const pnl = parseFloat(t.profit_loss ?? "0");
-          if (!isNaN(pnl)) r += pnl;
-        });
-      } else {
-        const groupIds = new Set(g.trades.map((t) => t.trade_id));
-        const st = calcMovingAverage(spotTrades, groupIds);
-        Array.from(st.values()).forEach((s) => { r += s.realized; });
-      }
-      return {
-        label: g.label,
-        realized: r,
-        tradeCount: g.trades.filter((t) => t.side === "sell").length,
-      };
+      Array.from(st.values()).forEach((s) => { r += s.realized; });
+      const entry = labelMap.get(g.label) ?? { realized: 0, tradeCount: 0 };
+      entry.realized += r;
+      entry.tradeCount += g.trades.filter((t) => t.side === "sell").length;
+      labelMap.set(g.label, entry);
     });
+
+    marginGroups.forEach((g) => {
+      let r = 0;
+      g.trades.forEach((t) => {
+        const pnl = parseFloat(t.profit_loss ?? "0");
+        if (!isNaN(pnl)) r += pnl;
+      });
+      const entry = labelMap.get(g.label) ?? { realized: 0, tradeCount: 0 };
+      entry.realized += r;
+      entry.tradeCount += g.trades.filter((t) => {
+        const pnl = parseFloat(t.profit_loss ?? "0");
+        return !isNaN(pnl) && pnl !== 0;
+      }).length;
+      labelMap.set(g.label, entry);
+    });
+
+    const records = Array.from(labelMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([label, v]) => ({ label, realized: v.realized, tradeCount: v.tradeCount }));
 
     const totalTrades =
       filteredSpot.filter((t) => t.side === "sell").length +
@@ -183,35 +213,6 @@ export async function POST(req: NextRequest) {
         ? Math.round((spotWins / (spotWins + spotLosses)) * 100)
         : 0;
 
-    // デバッグ情報（原因調査用）
-    const debug = {
-      allTradesCount: allTrades.length,
-      spotTradesCount: spotTrades.length,
-      marginTradesCount: marginTrades.length,
-      filteredSpotCount: filteredSpot.length,
-      filteredMarginCount: filteredMargin.length,
-      fetchErrors,
-      sampleMarginTrade: marginTrades[0]
-        ? {
-            trade_id: marginTrades[0].trade_id,
-            pair: marginTrades[0].pair,
-            side: marginTrades[0].side,
-            position_side: marginTrades[0].position_side,
-            profit_loss: marginTrades[0].profit_loss,
-            executed_at: marginTrades[0].executed_at,
-          }
-        : null,
-      sampleSpotSell: spotTrades.filter((t) => t.side === "sell")[0]
-        ? {
-            trade_id: spotTrades.filter((t) => t.side === "sell")[0].trade_id,
-            pair: spotTrades.filter((t) => t.side === "sell")[0].pair,
-            fee_amount_base: spotTrades.filter((t) => t.side === "sell")[0].fee_amount_base,
-            fee_amount_quote: spotTrades.filter((t) => t.side === "sell")[0].fee_amount_quote,
-            executed_at: spotTrades.filter((t) => t.side === "sell")[0].executed_at,
-          }
-        : null,
-    };
-
     return NextResponse.json({
       totalRealized,
       totalUnrealized,
@@ -223,7 +224,14 @@ export async function POST(req: NextRequest) {
       balances: assetsRes.assets.filter((a) => parseFloat(a.onhand_amount) > 0),
       tickers,
       marginPositions: marginPositionsForDisplay,
-      debug,
+      debug: {
+        allTradesCount: allTrades.length,
+        spotTradesCount: spotTrades.length,
+        marginTradesCount: marginTrades.length,
+        filteredSpotCount: filteredSpot.length,
+        filteredMarginCount: filteredMargin.length,
+        fetchErrors,
+      },
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Unknown error";
