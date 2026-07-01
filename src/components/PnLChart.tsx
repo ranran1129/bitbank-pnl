@@ -1,36 +1,93 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { Chart, BarElement, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Filler, BarController, LineController } from "chart.js";
+import {
+  Chart,
+  BarElement,
+  LineElement,
+  PointElement,
+  CategoryScale,
+  LinearScale,
+  Tooltip,
+  Filler,
+  BarController,
+  LineController,
+} from "chart.js";
 
-Chart.register(BarElement, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Filler, BarController, LineController);
+Chart.register(
+  BarElement,
+  LineElement,
+  PointElement,
+  CategoryScale,
+  LinearScale,
+  Tooltip,
+  Filler,
+  BarController,
+  LineController
+);
 
 interface Props {
   records: { label: string; realized: number; tradeCount: number }[];
   mode: "pnl" | "cumulative" | "count";
 }
 
+// データ点数に応じてチャート横幅を決定（横スクロール対応）
+const BAR_MIN_WIDTH = 64;
+const CHART_HEIGHT = 240;
+
 export function PnLChart({ records, mode }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<Chart | null>(null);
 
+  const chartWidth = Math.max(600, records.length * BAR_MIN_WIDTH);
+
   useEffect(() => {
     if (!ref.current) return;
-    if (chartRef.current) chartRef.current.destroy();
+    if (chartRef.current) {
+      chartRef.current.destroy();
+      chartRef.current = null;
+    }
+
+    const canvas = ref.current;
+    // responsive: false のため canvas の width/height 属性でサイズを制御
+    canvas.width = chartWidth;
+    canvas.height = CHART_HEIGHT;
 
     const labels = records.map((r) => r.label);
+    const tickColor = "rgba(255,255,255,0.35)";
+    const gridColor = "rgba(255,255,255,0.06)";
 
-    let cumulative = 0;
-    const cumData = records.map((r) => {
-      cumulative += r.realized;
-      return cumulative;
-    });
+    const commonXAxis = {
+      grid: { color: gridColor },
+      ticks: {
+        color: tickColor,
+        font: { size: 11 },
+        maxRotation: 45,
+        autoSkip: false,
+      },
+    };
+    const commonYAxis = {
+      grid: { color: gridColor },
+      ticks: {
+        color: tickColor,
+        font: { size: 11 },
+        callback: (v: number | string) =>
+          (Number(v) / 10000).toFixed(0) + "万",
+      },
+    };
 
-    const tickColor = "rgba(255,255,255,0.3)";
-    const gridColor = "rgba(255,255,255,0.05)";
+    const tooltipPnL = {
+      callbacks: {
+        title: (items: { label: string }[]) => items[0]?.label ?? "",
+        label: (ctx: { raw: unknown }) => {
+          const v = ctx.raw as number;
+          return (v >= 0 ? "+" : "") + "¥" + Math.round(v).toLocaleString();
+        },
+      },
+    };
 
     if (mode === "pnl") {
-      chartRef.current = new Chart(ref.current, {
+      chartRef.current = new Chart(canvas, {
         type: "bar",
         data: {
           labels,
@@ -50,37 +107,24 @@ export function PnLChart({ records, mode }: Props) {
           ],
         },
         options: {
-          responsive: true,
+          responsive: false,
           maintainAspectRatio: false,
+          animation: { duration: 300 },
           plugins: {
             legend: { display: false },
-            tooltip: {
-              callbacks: {
-                label: (ctx) => {
-                  const v = ctx.raw as number;
-                  return (v >= 0 ? "+" : "") + "¥" + Math.round(v).toLocaleString();
-                },
-              },
-            },
+            tooltip: tooltipPnL,
           },
-          scales: {
-            x: {
-              grid: { color: gridColor },
-              ticks: { color: tickColor, font: { size: 11 } },
-            },
-            y: {
-              grid: { color: gridColor },
-              ticks: {
-                color: tickColor,
-                font: { size: 11 },
-                callback: (v) => (Number(v) / 10000).toFixed(0) + "万",
-              },
-            },
-          },
+          scales: { x: commonXAxis, y: commonYAxis },
         },
       });
     } else if (mode === "cumulative") {
-      chartRef.current = new Chart(ref.current, {
+      let cumulative = 0;
+      const cumData = records.map((r) => {
+        cumulative += r.realized;
+        return cumulative;
+      });
+
+      chartRef.current = new Chart(canvas, {
         type: "line",
         data: {
           labels,
@@ -91,42 +135,26 @@ export function PnLChart({ records, mode }: Props) {
               borderColor: "#00d4a1",
               backgroundColor: "rgba(0,212,161,0.08)",
               fill: true,
-              tension: 0.4,
+              tension: 0.3,
               borderWidth: 2,
-              pointRadius: 4,
+              pointRadius: records.length > 60 ? 2 : 4,
               pointBackgroundColor: "#00d4a1",
             },
           ],
         },
         options: {
-          responsive: true,
+          responsive: false,
           maintainAspectRatio: false,
+          animation: { duration: 300 },
           plugins: {
             legend: { display: false },
-            tooltip: {
-              callbacks: {
-                label: (ctx) => {
-                  const v = ctx.raw as number;
-                  return (v >= 0 ? "+" : "") + "¥" + Math.round(v).toLocaleString();
-                },
-              },
-            },
+            tooltip: tooltipPnL,
           },
-          scales: {
-            x: { grid: { color: gridColor }, ticks: { color: tickColor, font: { size: 11 } } },
-            y: {
-              grid: { color: gridColor },
-              ticks: {
-                color: tickColor,
-                font: { size: 11 },
-                callback: (v) => (Number(v) / 10000).toFixed(0) + "万",
-              },
-            },
-          },
+          scales: { x: commonXAxis, y: commonYAxis },
         },
       });
     } else {
-      chartRef.current = new Chart(ref.current, {
+      chartRef.current = new Chart(canvas, {
         type: "bar",
         data: {
           labels,
@@ -142,32 +170,65 @@ export function PnLChart({ records, mode }: Props) {
           ],
         },
         options: {
-          responsive: true,
+          responsive: false,
           maintainAspectRatio: false,
-          plugins: { legend: { display: false } },
+          animation: { duration: 300 },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: (items: { label: string }[]) => items[0]?.label ?? "",
+                label: (ctx: { raw: unknown }) => ctx.raw + "件",
+              },
+            },
+          },
           scales: {
-            x: { grid: { color: gridColor }, ticks: { color: tickColor, font: { size: 11 } } },
+            x: commonXAxis,
             y: {
               grid: { color: gridColor },
-              ticks: { color: tickColor, font: { size: 11 }, callback: (v) => v + "件" },
+              ticks: {
+                color: tickColor,
+                font: { size: 11 },
+                callback: (v: number | string) => v + "件",
+              },
             },
           },
         },
       });
     }
 
-    return () => chartRef.current?.destroy();
-  }, [records, mode]);
+    return () => {
+      chartRef.current?.destroy();
+      chartRef.current = null;
+    };
+  }, [records, mode, chartWidth]);
 
   return (
-    <div style={{ position: "relative", width: "100%", height: 220 }}>
-      <canvas
-        ref={ref}
-        role="img"
-        aria-label="損益推移チャート"
+    <div
+      style={{
+        overflowX: "auto",
+        overflowY: "hidden",
+        width: "100%",
+        paddingBottom: 6,
+        scrollbarWidth: "thin",
+        scrollbarColor: "rgba(255,255,255,0.2) transparent",
+      }}
+    >
+      <div
+        style={{
+          width: chartWidth,
+          height: CHART_HEIGHT,
+          position: "relative",
+          flexShrink: 0,
+        }}
       >
-        損益の推移グラフ
-      </canvas>
+        <canvas
+          ref={ref}
+          role="img"
+          aria-label="損益推移チャート"
+          style={{ display: "block" }}
+        />
+      </div>
     </div>
   );
 }

@@ -69,23 +69,31 @@ export class BitbankClient {
   }
 
   // 現物・信用の全取引履歴を取得（同エンドポイントに混在、position_side で判別）
-  // エラー発生時はスキップせずエラー情報を返す
+  // 3ペアずつ並列取得し、バッチ間に150msのウェイトを入れてレートリミットを回避
   async getAllSpotTrades(pairs: string[], count = 1000): Promise<{
     trades: import("./calc").BitbankTrade[];
     errors: { pair: string; error: string }[];
   }> {
     const trades: import("./calc").BitbankTrade[] = [];
     const errors: { pair: string; error: string }[] = [];
+    const BATCH_SIZE = 3;
 
-    for (const pair of pairs) {
-      try {
-        await new Promise((r) => setTimeout(r, 200));
-        const res = await this.getSpotTrades(pair, count);
-        trades.push(...res.trades);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        errors.push({ pair, error: msg });
-        console.error(`[bitbank] getSpotTrades(${pair}) failed: ${msg}`);
+    for (let i = 0; i < pairs.length; i += BATCH_SIZE) {
+      const batch = pairs.slice(i, i + BATCH_SIZE);
+      const results = await Promise.allSettled(
+        batch.map((pair) => this.getSpotTrades(pair, count))
+      );
+      results.forEach((r, idx) => {
+        if (r.status === "fulfilled") {
+          trades.push(...r.value.trades);
+        } else {
+          const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+          errors.push({ pair: batch[idx], error: msg });
+          console.error(`[bitbank] getSpotTrades(${batch[idx]}) failed: ${msg}`);
+        }
+      });
+      if (i + BATCH_SIZE < pairs.length) {
+        await new Promise((r) => setTimeout(r, 150));
       }
     }
 
