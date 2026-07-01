@@ -207,19 +207,25 @@ export function filterByPeriod(
 export function groupByPeriod(
   trades: BitbankTrade[],
   period: PeriodType
-): { label: string; trades: BitbankTrade[] }[] {
+): { label: string; key: string; trades: BitbankTrade[] }[] {
   const map = new Map<string, BitbankTrade[]>();
 
   for (const t of trades) {
     const d = new Date(t.executed_at);
     let key: string;
 
-    if (period === "yearly") {
+    if (period === "all") {
+      // 全期間 → 年単位でグループ化
+      key = String(d.getFullYear());
+    } else if (period === "yearly") {
+      // 年次 → 月単位でグループ化（年を含む）
       key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     } else if (period === "monthly" || period === "weekly") {
+      // 月次・週次 → 日単位でグループ化
       key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     } else {
-      key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      // 日次 → 時間単位でグループ化
+      key = String(d.getHours()).padStart(2, "0");
     }
 
     if (!map.has(key)) map.set(key, []);
@@ -229,14 +235,18 @@ export function groupByPeriod(
   const entries = Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
   return entries.map(([k, v]) => {
     let label: string;
-    if (period === "yearly") {
-      label = k.slice(5).replace("-", "") + "月";
+    if (period === "all") {
+      label = k + "年";
+    } else if (period === "yearly") {
+      const [year, month] = k.split("-");
+      label = `${year}年${parseInt(month)}月`;
     } else if (period === "monthly" || period === "weekly") {
-      label = String(parseInt(k.slice(8))) + "日";
+      const parts = k.split("-");
+      label = `${parseInt(parts[1])}月${parseInt(parts[2])}日`;
     } else {
-      label = k.slice(5).replace("-", "") + "月";
+      label = parseInt(k) + "時";
     }
-    return { label, trades: v };
+    return { label, key: k, trades: v };
   });
 }
 

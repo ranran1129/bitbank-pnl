@@ -213,6 +213,44 @@ export async function POST(req: NextRequest) {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([label, v]) => ({ label, realized: v.realized, tradeCount: v.tradeCount }));
 
+    // =====================================================
+    // 年次損益（税金計算用）: 全取引を年単位でグループ化
+    // =====================================================
+    const yearSpotGroups = groupByPeriod(spotTrades, "all");   // "all" = 年次グループ
+    const yearMarginGroups = groupByPeriod(marginTrades, "all");
+
+    const yearMapForTax = new Map<string, { spotRealized: number; marginRealized: number }>();
+
+    yearSpotGroups.forEach((g) => {
+      const groupIds = new Set(g.trades.map((t) => t.trade_id));
+      const st = calcMovingAverage(spotTrades, groupIds);
+      let r = 0;
+      Array.from(st.values()).forEach((s) => { r += s.realized; });
+      const entry = yearMapForTax.get(g.key) ?? { spotRealized: 0, marginRealized: 0 };
+      entry.spotRealized += r;
+      yearMapForTax.set(g.key, entry);
+    });
+
+    yearMarginGroups.forEach((g) => {
+      let r = 0;
+      g.trades.forEach((t) => {
+        const pnl = parseFloat(t.profit_loss ?? "0");
+        if (!isNaN(pnl)) r += pnl;
+      });
+      const entry = yearMapForTax.get(g.key) ?? { spotRealized: 0, marginRealized: 0 };
+      entry.marginRealized += r;
+      yearMapForTax.set(g.key, entry);
+    });
+
+    const yearlyPnL = Array.from(yearMapForTax.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([year, v]) => ({
+        year: parseInt(year),
+        spotRealized: v.spotRealized,
+        marginRealized: v.marginRealized,
+        totalRealized: v.spotRealized + v.marginRealized,
+      }));
+
     return NextResponse.json({
       totalRealized,
       totalUnrealized,
@@ -224,6 +262,7 @@ export async function POST(req: NextRequest) {
       balances: assetsRes.assets.filter((a) => parseFloat(a.onhand_amount) > 0),
       tickers,
       marginPositions: marginPositionsForDisplay,
+      yearlyPnL,
       debug: {
         allTradesCount: allTrades.length,
         spotTradesCount: spotTrades.length,

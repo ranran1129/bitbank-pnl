@@ -48,6 +48,12 @@ interface DashboardState {
     price: string;
     profit_loss: string;
   }[];
+  yearlyPnL: {
+    year: number;
+    spotRealized: number;
+    marginRealized: number;
+    totalRealized: number;
+  }[];
 }
 
 export default function Page() {
@@ -77,6 +83,7 @@ export default function Page() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [chartMode, setChartMode] = useState<"pnl" | "cumulative" | "count">("pnl");
+  const [otherIncome, setOtherIncome] = useState("0"); // 税金計算: その他課税所得（万円）
 
   const fetchData = useCallback(
     async (m?: CalcMethod, p?: PeriodType, mk?: MarketType) => {
@@ -745,6 +752,118 @@ export default function Page() {
                   オープンポジション（信用）
                 </div>
                 <MarginTable positions={data.marginPositions} />
+              </div>
+            )}
+
+            {/* ===== 税金シミュレーション ===== */}
+            {data.yearlyPnL && data.yearlyPnL.length > 0 && (
+              <div className="card" style={{ padding: "1.25rem", marginTop: "1rem" }}>
+                <div style={{
+                  fontSize: 11, fontWeight: 500, letterSpacing: ".08em",
+                  textTransform: "uppercase", color: "var(--text2)", marginBottom: "1rem",
+                  display: "flex", alignItems: "center", gap: 8,
+                }}>
+                  税金シミュレーション
+                  <span style={{ fontSize: 10, color: "var(--text3)", fontWeight: 400, textTransform: "none" }}>
+                    ※ 目安のみ。正確な申告は税理士にご相談ください
+                  </span>
+                </div>
+
+                {/* その他課税所得入力 */}
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: "1rem" }}>
+                  <label style={{ fontSize: 12, color: "var(--text2)", whiteSpace: "nowrap" }}>
+                    仮想通貨以外の課税所得
+                  </label>
+                  <input
+                    type="number"
+                    value={otherIncome}
+                    onChange={(e) => setOtherIncome(e.target.value)}
+                    style={{ width: 120, padding: "6px 10px", fontSize: 13 }}
+                  />
+                  <span style={{ fontSize: 12, color: "var(--text3)" }}>万円</span>
+                  <span style={{ fontSize: 11, color: "var(--text3)" }}>
+                    （給与・事業所得から各種控除後の金額）
+                  </span>
+                </div>
+
+                {/* 年次損益・税額テーブル */}
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      {["年度", "現物実現損益", "信用実現損益", "合計損益", "課税対象", "推定所得税", "住民税(10%)", "推定税額合計"].map((h) => (
+                        <th key={h} style={{
+                          textAlign: h === "年度" ? "left" : "right",
+                          padding: "4px 8px 10px", fontSize: 10,
+                          color: "var(--text3)", fontWeight: 400,
+                          borderBottom: "1px solid var(--border)", letterSpacing: ".04em",
+                        }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.yearlyPnL.map((row) => {
+                      const taxable = Math.max(0, row.totalRealized);
+                      const otherIncomeYen = (parseFloat(otherIncome) || 0) * 10000;
+                      const totalIncome = otherIncomeYen + taxable;
+                      // 所得税: 累進課税（仮想通貨分の限界税率を適用）
+                      const incomeTaxRate = (() => {
+                        if (totalIncome <= 1950000) return 0.05;
+                        if (totalIncome <= 3300000) return 0.10;
+                        if (totalIncome <= 6950000) return 0.20;
+                        if (totalIncome <= 9000000) return 0.23;
+                        if (totalIncome <= 18000000) return 0.33;
+                        if (totalIncome <= 40000000) return 0.40;
+                        return 0.45;
+                      })();
+                      const incomeTax = Math.floor(taxable * incomeTaxRate);
+                      const residentTax = Math.floor(taxable * 0.10);
+                      const totalTax = incomeTax + residentTax;
+                      const isLoss = row.totalRealized < 0;
+                      return (
+                        <tr key={row.year}>
+                          <td style={{ padding: "10px 8px", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>
+                            {row.year}年
+                          </td>
+                          <td className="mono" style={{
+                            padding: "10px 8px", borderBottom: "1px solid var(--border)",
+                            textAlign: "right", color: row.spotRealized >= 0 ? "var(--accent)" : "var(--danger)",
+                          }}>{fmtJPY(row.spotRealized)}</td>
+                          <td className="mono" style={{
+                            padding: "10px 8px", borderBottom: "1px solid var(--border)",
+                            textAlign: "right", color: row.marginRealized >= 0 ? "var(--accent)" : "var(--danger)",
+                          }}>{fmtJPY(row.marginRealized)}</td>
+                          <td className="mono" style={{
+                            padding: "10px 8px", borderBottom: "1px solid var(--border)",
+                            textAlign: "right", fontWeight: 600,
+                            color: row.totalRealized >= 0 ? "var(--accent)" : "var(--danger)",
+                          }}>{fmtJPY(row.totalRealized)}</td>
+                          <td className="mono" style={{
+                            padding: "10px 8px", borderBottom: "1px solid var(--border)",
+                            textAlign: "right", color: "var(--text2)",
+                          }}>{isLoss ? "−" : fmtJPY(taxable)}</td>
+                          <td className="mono" style={{
+                            padding: "10px 8px", borderBottom: "1px solid var(--border)",
+                            textAlign: "right", color: isLoss ? "var(--text3)" : "var(--danger)",
+                          }}>{isLoss ? "−" : `¥${incomeTax.toLocaleString()} (${Math.round(incomeTaxRate * 100)}%)`}</td>
+                          <td className="mono" style={{
+                            padding: "10px 8px", borderBottom: "1px solid var(--border)",
+                            textAlign: "right", color: isLoss ? "var(--text3)" : "var(--danger)",
+                          }}>{isLoss ? "−" : `¥${residentTax.toLocaleString()}`}</td>
+                          <td className="mono" style={{
+                            padding: "10px 8px", borderBottom: "1px solid var(--border)",
+                            textAlign: "right", fontWeight: 600,
+                            color: isLoss ? "var(--text3)" : "var(--danger)",
+                          }}>{isLoss ? "損失(繰越不可)" : `¥${totalTax.toLocaleString()}`}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div style={{ marginTop: 10, fontSize: 11, color: "var(--text3)", lineHeight: 1.8 }}>
+                  ※ 所得税は仮想通貨分の限界税率を適用した概算です。復興特別所得税(2.1%)は含みません。<br />
+                  ※ 損失は仮想通貨間で相殺可能ですが、翌年への繰越控除はできません。<br />
+                  ※ 移動平均法・総平均法の選択は確定申告時の計算方法と一致させてください。
+                </div>
               </div>
             )}
           </>
