@@ -49,9 +49,6 @@ export function PnLChart({ records, mode }: Props) {
     }
 
     const canvas = ref.current;
-    // responsive: false のため canvas の width/height 属性でサイズを制御
-    canvas.width = chartWidth;
-    canvas.height = CHART_HEIGHT;
 
     const labels = records.map((r) => r.label);
     const tickColor = "rgba(255,255,255,0.35)";
@@ -107,7 +104,7 @@ export function PnLChart({ records, mode }: Props) {
           ],
         },
         options: {
-          responsive: false,
+          responsive: true,
           maintainAspectRatio: false,
           animation: { duration: 300 },
           plugins: {
@@ -143,7 +140,7 @@ export function PnLChart({ records, mode }: Props) {
           ],
         },
         options: {
-          responsive: false,
+          responsive: true,
           maintainAspectRatio: false,
           animation: { duration: 300 },
           plugins: {
@@ -170,7 +167,7 @@ export function PnLChart({ records, mode }: Props) {
           ],
         },
         options: {
-          responsive: false,
+          responsive: true,
           maintainAspectRatio: false,
           animation: { duration: 300 },
           plugins: {
@@ -222,12 +219,7 @@ export function PnLChart({ records, mode }: Props) {
           flexShrink: 0,
         }}
       >
-        <canvas
-          ref={ref}
-          role="img"
-          aria-label="損益推移チャート"
-          style={{ display: "block" }}
-        />
+        <canvas ref={ref} role="img" aria-label="損益推移チャート" />
       </div>
     </div>
   );
